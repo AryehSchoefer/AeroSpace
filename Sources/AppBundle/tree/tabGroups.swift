@@ -32,3 +32,70 @@ func matchHiddenTabIds(
     }
     return result
 }
+
+struct TabTile: Equatable {
+    var visibleId: UInt32
+    var tabIds: Set<UInt32>
+}
+
+struct TabGroupScan: Equatable {
+    var visibleIds: Set<UInt32> = []
+    var groups: [UInt32: Set<UInt32>] = [:]
+}
+
+enum TabTileOutcome: Equatable {
+    case keep(TabTile)
+    case merged
+    case dead
+}
+
+struct TabReconcileResult: Equatable {
+    var outcomes: [TabTileOutcome]
+    var newGroups: [TabTile]
+}
+
+// Hidden tabs can't be observed directly, so ids leave a tile only on positive evidence:
+// they are dead, they belong to another tile's group, or they are visible on their own (dragged out)
+func reconcileTabGroups(_ tiles: [TabTile], _ scan: TabGroupScan, aliveIds: Set<UInt32>) -> TabReconcileResult {
+    var tiles = tiles.map { TabTile(visibleId: $0.visibleId, tabIds: $0.tabIds.intersection(aliveIds)) }
+    let hadAliveIds = tiles.map { !$0.tabIds.isEmpty }
+    var newGroups: [TabTile] = []
+
+    for visibleId in scan.groups.keys.sorted() {
+        let members = scan.groups[visibleId].orDie()
+        let owners = tiles.indices.filter { !tiles[$0].tabIds.isDisjoint(with: members) }
+        let owner = owners.first(where: { tiles[$0].tabIds.contains(visibleId) })
+            ?? owners.max(by: { tiles[$0].tabIds.intersection(members).count < tiles[$1].tabIds.intersection(members).count })
+        guard let owner else {
+            newGroups.append(TabTile(visibleId: visibleId, tabIds: members))
+            continue
+        }
+        for other in owners where other != owner {
+            tiles[other].tabIds.subtract(members)
+        }
+        tiles[owner].tabIds.formUnion(members)
+        tiles[owner].visibleId = visibleId
+    }
+
+    let groupVisibleIds = Set(scan.groups.keys)
+    for index in tiles.indices where !tiles[index].tabIds.isEmpty {
+        let visible = tiles[index].tabIds.intersection(scan.visibleIds)
+        let keep = visible.intersection(groupVisibleIds).min()
+            ?? (visible.contains(tiles[index].visibleId) ? tiles[index].visibleId : visible.min())
+        if let keep {
+            tiles[index].tabIds.subtract(visible.subtracting([keep]))
+            tiles[index].visibleId = keep
+        } else if !tiles[index].tabIds.contains(tiles[index].visibleId) {
+            tiles[index].visibleId = tiles[index].tabIds.min().orDie()
+        }
+    }
+
+    let outcomes: [TabTileOutcome] = tiles.indices.map { index in
+        switch (tiles[index].tabIds.isEmpty, hadAliveIds[index]) {
+            case (false, _): .keep(tiles[index])
+            case (true, true): .merged
+            case (true, false): .dead
+        }
+    }
+    return TabReconcileResult(outcomes: outcomes, newGroups: newGroups)
+}
