@@ -2,7 +2,8 @@ import AppKit
 import Common
 
 open class Window: TreeNode, Hashable {
-    let windowId: UInt32
+    // Mutable: for native macOS tab groups it's the visible tab, which changes when the user switches tabs
+    var windowId: UInt32
     let app: any AbstractApp
     var lastFloatingSize: CGSize?
     var isFullscreen: Bool = false
@@ -27,7 +28,7 @@ open class Window: TreeNode, Hashable {
     func closeAxWindow() { die("Not implemented") }
 
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(windowId)
+        hasher.combine(ObjectIdentifier(self)) // windowId is mutable. Equality is identity anyway (TreeNode.==)
     }
 
     func getAxSize(_ cm: CancellationMode) async throws -> CGSize? { die("Not implemented") }

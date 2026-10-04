@@ -4,15 +4,32 @@ import Common
 final class MacWindow: Window {
     let macApp: MacApp
     private var prevUnhiddenProportionalPositionInsideWorkspaceRect: CGPoint?
+    private(set) var tabIds: Set<UInt32>
 
     @MainActor
     private init(_ id: UInt32, _ actor: MacApp, lastFloatingSize: CGSize?, parent: NonLeafTreeNodeObject, adaptiveWeight: CGFloat, index: Int) {
         self.macApp = actor
+        self.tabIds = [id]
         super.init(id: id, actor, lastFloatingSize: lastFloatingSize, parent: parent, adaptiveWeight: adaptiveWeight, index: index)
     }
 
     @MainActor static var allWindowsMap: [UInt32: MacWindow] = [:]
-    @MainActor static var allWindows: [MacWindow] { Array(allWindowsMap.values) }
+    @MainActor static var allWindows: [MacWindow] { Array(Set(allWindowsMap.values)) }
+
+    var tabTile: TabTile { TabTile(visibleId: windowId, tabIds: tabIds) }
+
+    @MainActor
+    func setTabs(_ tile: TabTile) {
+        check(tile.tabIds.contains(tile.visibleId))
+        for id in tabIds.subtracting(tile.tabIds) where MacWindow.allWindowsMap[id] === self {
+            MacWindow.allWindowsMap.removeValue(forKey: id)
+        }
+        for id in tile.tabIds {
+            MacWindow.allWindowsMap[id] = self
+        }
+        tabIds = tile.tabIds
+        windowId = tile.visibleId
+    }
 
     @MainActor
     @discardableResult
@@ -77,8 +94,11 @@ final class MacWindow: Window {
     //                        If you are unsure, it's better to pass `false`
     @MainActor
     func garbageCollect(skipClosedWindowsCache: Bool) {
-        if MacWindow.allWindowsMap.removeValue(forKey: windowId) == nil {
+        if MacWindow.allWindowsMap[windowId] !== self {
             return
+        }
+        for id in tabIds where MacWindow.allWindowsMap[id] === self {
+            MacWindow.allWindowsMap.removeValue(forKey: id)
         }
         if !skipClosedWindowsCache { cacheClosedWindowIfNeeded() }
         let parent = unbindFromParent().parent
@@ -114,8 +134,15 @@ final class MacWindow: Window {
     }
 
     override func closeAxWindow() {
-        garbageCollect(skipClosedWindowsCache: true)
-        macApp.closeAndUnregisterAxWindow(windowId)
+        let closing = windowId
+        let remainingTabs = tabIds.subtracting([closing])
+        if let nextVisible = remainingTabs.min() {
+            // Close only the visible native tab. The tile stays; the next refresh picks the tab macOS shows instead
+            setTabs(TabTile(visibleId: nextVisible, tabIds: remainingTabs))
+        } else {
+            garbageCollect(skipClosedWindowsCache: true)
+        }
+        macApp.closeAndUnregisterAxWindow(closing)
     }
 
     // todo it's part of the window layout and should be moved to layoutRecursive.swift

@@ -194,4 +194,15 @@ final class TabGroupsTest: XCTestCase {
         )
         assertEquals(result, TabReconcileResult(outcomes: [.keep(tile(7, [7]))], newGroups: [tile(1, [1, 2])]))
     }
+
+    @MainActor
+    func testWindowHashSurvivesWindowIdChange() {
+        setUpWorkspacesForTests()
+        let window = TestWindow.new(id: 1, parent: Workspace.get(byName: "a").rootTilingContainer)
+        var set: Set<Window> = [window]
+        window.windowId = 2
+        assertTrue(set.contains(window))
+        set.remove(window)
+        assertTrue(set.isEmpty)
+    }
 }
