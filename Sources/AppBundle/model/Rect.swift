@@ -63,3 +63,7 @@ extension Rect {
 
     func getDimension(_ orientation: Orientation) -> CGFloat { orientation == .h ? width : height }
 }
+
+extension Rect {
+    var cgRect: CGRect { CGRect(x: topLeftX, y: topLeftY, width: width, height: height) }
+}

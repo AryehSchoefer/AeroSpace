@@ -123,15 +123,26 @@ func refreshModel_nonCancellable() async {
 private func refresh() async throws {
     // Garbage collect terminated apps and windows before working with all windows
     let mapping = try await MacApp.refreshAllAndGetAliveWindowIds(frontmostAppBundleId: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
-    let aliveWindowIds = mapping.values.flatMap(id).toSet()
+    let aliveWindowIds = mapping.values.flatMap(\.aliveIds).toSet()
+
+    // Before GC, so that closing the visible native tab doesn't garbage collect its whole tab group
+    let tabGroups = mapping.values.reduce(into: [UInt32: Set<UInt32>]()) { $0.merge($1.tabGroups) { old, _ in old } }
+    let unownedTabGroups = applyTabGroupScan(
+        TabGroupScan(visibleIds: mapping.values.flatMap(\.visibleIds).toSet(), groups: tabGroups),
+        aliveIds: aliveWindowIds,
+    )
 
     for window in MacWindow.allWindows {
         if !aliveWindowIds.contains(window.windowId) {
             window.garbageCollect(skipClosedWindowsCache: false)
         }
     }
-    for (app, windowIds) in mapping {
-        for windowId in windowIds {
+    for tile in unownedTabGroups {
+        guard let app = mapping.first(where: { $0.value.tabGroups[tile.visibleId] != nil })?.key else { continue }
+        try await MacWindow.getOrRegister(windowId: tile.visibleId, macApp: app).setTabs(tile)
+    }
+    for (app, refresh) in mapping {
+        for windowId in refresh.aliveIds {
             try await MacWindow.getOrRegister(windowId: windowId, macApp: app)
         }
     }
