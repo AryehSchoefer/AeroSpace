@@ -21,6 +21,8 @@ final class MacWindow: Window {
     @MainActor
     func setTabs(_ tile: TabTile) {
         check(tile.tabIds.contains(tile.visibleId))
+        // Garbage collected (e.g. by an on-window-detected callback during an await). Don't resurrect it
+        if MacWindow.allWindowsMap[windowId] !== self { return }
         for id in tabIds.subtracting(tile.tabIds) where MacWindow.allWindowsMap[id] === self {
             MacWindow.allWindowsMap.removeValue(forKey: id)
         }
@@ -36,7 +38,9 @@ final class MacWindow: Window {
     static func getOrRegister(windowId: UInt32, macApp: MacApp) async throws -> MacWindow {
         if let existing = allWindowsMap[windowId] { return existing }
         // A new native macOS tab joins the tile of its tab group instead of splitting the layout
-        let tabSiblingTile = try await macApp.getTabSiblingIds(windowId, .cancellable).lazy.compactMap { allWindowsMap[$0] }.first
+        let tabSiblingIds = try await macApp.getTabSiblingIds(windowId, .cancellable)
+        let tabSiblingTiles = Array(Set(tabSiblingIds.compactMap { allWindowsMap[$0] }))
+        let tabSiblingTile = ownerIndex(tabSiblingTiles.map(\.tabTile), of: tabSiblingIds).map { tabSiblingTiles[$0] }
         if let existing = allWindowsMap[windowId] { return existing }
         if let tabSiblingTile {
             tabSiblingTile.setTabs(TabTile(visibleId: windowId, tabIds: tabSiblingTile.tabIds.union([windowId])))

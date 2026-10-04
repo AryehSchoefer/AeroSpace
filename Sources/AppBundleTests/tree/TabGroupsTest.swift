@@ -9,6 +9,7 @@ final class TabGroupsTest: XCTestCase {
     func testMatchesHiddenTabsByTitle() {
         let result = matchHiddenTabIds(
             tabTitles: ["tmux attach", "logs", "tmux"],
+            visibleId: 99,
             visibleTitle: "tmux",
             visibleRect: frame,
             candidates: [
@@ -16,7 +17,7 @@ final class TabGroupsTest: XCTestCase {
                 TabCandidate(id: 11, title: "logs", rect: otherFrame), // stale frame is fine
                 TabCandidate(id: 12, title: "unrelated", rect: frame),
             ],
-            stickyIds: [],
+            owners: [:],
         )
         assertEquals(result, [10, 11])
     }
@@ -24,10 +25,11 @@ final class TabGroupsTest: XCTestCase {
     func testSingleTabMatchesNothing() {
         let result = matchHiddenTabIds(
             tabTitles: ["tmux"],
+            visibleId: 99,
             visibleTitle: "tmux",
             visibleRect: frame,
             candidates: [TabCandidate(id: 10, title: "tmux", rect: frame)],
-            stickyIds: [],
+            owners: [:],
         )
         assertEquals(result, [])
     }
@@ -35,6 +37,7 @@ final class TabGroupsTest: XCTestCase {
     func testDuplicateTitlesTakeOneCandidatePerTab() {
         let result = matchHiddenTabIds(
             tabTitles: ["tmux attach", "tmux attach", "tmux"],
+            visibleId: 99,
             visibleTitle: "tmux",
             visibleRect: frame,
             candidates: [
@@ -42,7 +45,7 @@ final class TabGroupsTest: XCTestCase {
                 TabCandidate(id: 11, title: "tmux attach", rect: frame),
                 TabCandidate(id: 12, title: "tmux attach", rect: frame),
             ],
-            stickyIds: [],
+            owners: [:],
         )
         assertEquals(result, [10, 11])
     }
@@ -50,13 +53,14 @@ final class TabGroupsTest: XCTestCase {
     func testFrameMatchBreaksTies() {
         let result = matchHiddenTabIds(
             tabTitles: ["a", "b"],
+            visibleId: 99,
             visibleTitle: "b",
             visibleRect: frame,
             candidates: [
                 TabCandidate(id: 10, title: "a", rect: otherFrame),
                 TabCandidate(id: 11, title: "a", rect: frame),
             ],
-            stickyIds: [],
+            owners: [:],
         )
         assertEquals(result, [11])
     }
@@ -64,15 +68,58 @@ final class TabGroupsTest: XCTestCase {
     func testStickyIdsWinOverFrameMatch() {
         let result = matchHiddenTabIds(
             tabTitles: ["a", "b"],
+            visibleId: 99,
             visibleTitle: "b",
             visibleRect: frame,
             candidates: [
                 TabCandidate(id: 10, title: "a", rect: otherFrame),
                 TabCandidate(id: 11, title: "a", rect: frame),
             ],
-            stickyIds: [10],
+            owners: [99: tile(99, [99, 10]), 10: tile(99, [99, 10]), 11: tile(11, [11])],
         )
         assertEquals(result, [10])
+    }
+
+    func testNewTabWithDuplicateTitlesStaysInItsWindow() {
+        let a = tile(7, [7, 8])
+        let b = tile(3, [3, 4])
+        let result = matchHiddenTabIds(
+            tabTitles: ["~", "~", "~"],
+            visibleId: 9,
+            visibleTitle: "~",
+            visibleRect: frame,
+            candidates: [
+                TabCandidate(id: 4, title: "~", rect: otherFrame),
+                TabCandidate(id: 7, title: "~", rect: frame),
+                TabCandidate(id: 8, title: "~", rect: otherFrame),
+            ],
+            owners: [7: a, 8: a, 3: b, 4: b],
+        )
+        assertEquals(result, [7, 8])
+    }
+
+    func testOtherTilesWindowIsNotAbsorbedWithoutFrameMatch() {
+        let result = matchHiddenTabIds(
+            tabTitles: ["~", "~"],
+            visibleId: 1,
+            visibleTitle: "~",
+            visibleRect: frame,
+            candidates: [TabCandidate(id: 5, title: "~", rect: otherFrame)],
+            owners: [1: tile(1, [1]), 5: tile(5, [5])],
+        )
+        assertEquals(result, [])
+    }
+
+    func testOtherTilesWindowWithFrameMatchIsAbsorbed() {
+        let result = matchHiddenTabIds(
+            tabTitles: ["a", "b"],
+            visibleId: 1,
+            visibleTitle: "b",
+            visibleRect: frame,
+            candidates: [TabCandidate(id: 5, title: "a", rect: frame)],
+            owners: [1: tile(1, [1]), 5: tile(5, [5])],
+        )
+        assertEquals(result, [5])
     }
 
     private func tile(_ visibleId: UInt32, _ tabIds: Set<UInt32>) -> TabTile { TabTile(visibleId: visibleId, tabIds: tabIds) }
@@ -157,6 +204,21 @@ final class TabGroupsTest: XCTestCase {
             aliveIds: [1, 2, 3],
         )
         assertEquals(result.outcomes, [.merged, .keep(tile(2, [1, 2, 3]))])
+    }
+
+    func testNewTabRaceKeepsOriginalTile() {
+        let result = reconcileTabGroups(
+            [tile(1, [1]), tile(2, [2])],
+            TabGroupScan(visibleIds: [2], groups: [2: [1, 2]]),
+            aliveIds: [1, 2],
+        )
+        assertEquals(result.outcomes, [.keep(tile(2, [1, 2])), .merged])
+    }
+
+    func testOwnerIndexPrefersMostMembersThenOldestTile() {
+        assertEquals(ownerIndex([tile(1, [1]), tile(2, [2, 3])], of: [1, 2, 3]), 1)
+        assertEquals(ownerIndex([tile(5, [5]), tile(2, [2])], of: [2, 5]), 1)
+        assertEquals(ownerIndex([tile(5, [5])], of: [7]), nil)
     }
 
     func testGroupOwnedByTileContainingVisibleId() {

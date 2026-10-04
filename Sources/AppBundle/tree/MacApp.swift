@@ -124,25 +124,30 @@ final class MacApp: AbstractApp {
                 .windowId
         }
         guard let windowId else { return nil }
-        return try await MacWindow.getOrRegister(windowId: windowId, macApp: self)
+        let window = try await MacWindow.getOrRegister(windowId: windowId, macApp: self)
+        // The focused native tab is always the visible one. Don't wait for the next refresh (light sessions cancel it)
+        if window.windowId != windowId && window.tabIds.contains(windowId) {
+            window.setTabs(TabTile(visibleId: windowId, tabIds: window.tabIds))
+        }
+        return window
     }
 
     @MainActor
     func getTabSiblingIds(_ windowId: UInt32, _ cm: CancellationMode) async throws -> Set<UInt32> {
-        let stickyIds = tabStickyIds
+        let owners = tabOwners
         return try await thread?.runInLoop(cm) { [windows, axApp] job in
             let axWindows = axApp.threadGuarded.get(Ax.windowsAttr) ?? []
             guard let window = axWindows.first(where: { $0.windowId == windowId }) else { return [] }
-            let groups = try scanTabGroups([window], visibleIds: Set(axWindows.map(\.windowId)), known: windows.threadGuarded, stickyIds: stickyIds, job)
+            let groups = try scanTabGroups([window], visibleIds: Set(axWindows.map(\.windowId)), known: windows.threadGuarded, owners: owners, job)
             return groups[windowId]?.subtracting([windowId]) ?? []
         } ?? []
     }
 
-    @MainActor var tabStickyIds: [UInt32: Set<UInt32>] {
-        var result: [UInt32: Set<UInt32>] = [:]
-        for window in MacWindow.allWindows where window.macApp === self && window.tabIds.count > 1 {
+    @MainActor var tabOwners: [UInt32: TabTile] {
+        var result: [UInt32: TabTile] = [:]
+        for window in MacWindow.allWindows where window.macApp === self {
             for id in window.tabIds {
-                result[id] = window.tabIds
+                result[id] = window.tabTile
             }
         }
         return result
@@ -291,7 +296,7 @@ final class MacApp: AbstractApp {
                     guard let app = try await MacApp.getOrRegister(nsApp) else {
                         return (nsApp.processIdentifier, AppWindowsRefresh(aliveIds: [], visibleIds: [], tabGroups: [:]))
                     }
-                    return (nsApp.processIdentifier, try await app.refreshAndGetAliveWindowIds(frontmostAppBundleId: frontmostAppBundleId, stickyIds: app.tabStickyIds))
+                    return (nsApp.processIdentifier, try await app.refreshAndGetAliveWindowIds(frontmostAppBundleId: frontmostAppBundleId, owners: app.tabOwners))
                 }
             }
             // Register new apps
@@ -320,7 +325,7 @@ final class MacApp: AbstractApp {
         }
     }
 
-    private func refreshAndGetAliveWindowIds(frontmostAppBundleId: String?, stickyIds: [UInt32: Set<UInt32>]) async throws -> AppWindowsRefresh {
+    private func refreshAndGetAliveWindowIds(frontmostAppBundleId: String?, owners: [UInt32: TabTile]) async throws -> AppWindowsRefresh {
         if nsApp.isTerminated {
             await destroy()
             return AppWindowsRefresh(aliveIds: [], visibleIds: [], tabGroups: [:])
@@ -346,7 +351,7 @@ final class MacApp: AbstractApp {
                     visible.append((id, window))
                 }
             }
-            let tabGroups = try scanTabGroups(visible, visibleIds: Set(axWindows.map(\.windowId)), known: alive, stickyIds: stickyIds, job)
+            let tabGroups = try scanTabGroups(visible, visibleIds: Set(axWindows.map(\.windowId)), known: alive, owners: owners, job)
 
             windows.threadGuarded = alive
             return (Array(alive.keys), Array(dead.keys), visible.map(\.windowId), tabGroups)
@@ -440,7 +445,7 @@ private func scanTabGroups(
     _ scan: [WindowIdAndAxUiElement],
     visibleIds: Set<UInt32>,
     known: [UInt32: AxWindow],
-    stickyIds: [UInt32: Set<UInt32>],
+    owners: [UInt32: TabTile],
     _ job: RunLoopJob,
 ) throws -> [UInt32: Set<UInt32>] {
     var candidates: [TabCandidate] = []
@@ -456,10 +461,11 @@ private func scanTabGroups(
               let tabs = tabGroup.get(Ax.tabsAttr), tabs.count > 1 else { continue }
         let hidden = matchHiddenTabIds(
             tabTitles: tabs.map { $0.get(Ax.titleAttr) ?? "" },
+            visibleId: id,
             visibleTitle: window.get(Ax.titleAttr) ?? "",
             visibleRect: try getAxRect(window: window, job: job)?.cgRect,
             candidates: candidates,
-            stickyIds: stickyIds[id] ?? [],
+            owners: owners,
         )
         if hidden.isEmpty { continue }
         result[id] = hidden.union([id])

@@ -11,19 +11,28 @@ struct TabCandidate: Equatable {
 /// so the title decides and the frame only breaks ties.
 func matchHiddenTabIds(
     tabTitles: [String],
+    visibleId: UInt32,
     visibleTitle: String,
     visibleRect: CGRect?,
     candidates: [TabCandidate],
-    stickyIds: Set<UInt32>,
+    owners: [UInt32: TabTile],
 ) -> Set<UInt32> {
+    func isFrameEqual(_ candidate: TabCandidate) -> Bool { visibleRect != nil && candidate.rect == visibleRect }
+    // A new tab inherits the tile of the tab it replaced on screen (same frame, was the visible one)
+    let home: Set<UInt32> = owners[visibleId]?.tabIds
+        ?? candidates.first(where: { isFrameEqual($0) && owners[$0.id]?.visibleId == $0.id }).flatMap { owners[$0.id]?.tabIds }
+        ?? []
     var remainingTitles = tabTitles
     if let index = remainingTitles.firstIndex(of: visibleTitle) {
         remainingTitles.remove(at: index)
     }
     func score(_ candidate: TabCandidate) -> Int {
-        (stickyIds.contains(candidate.id) ? 2 : 0) + (visibleRect != nil && candidate.rect == visibleRect ? 1 : 0)
+        (home.contains(candidate.id) ? 4 : owners[candidate.id] == nil ? 2 : 0) + (isFrameEqual(candidate) ? 1 : 0)
     }
-    var pool = candidates.sorted { score($0) != score($1) ? score($0) > score($1) : $0.id < $1.id }
+    // Windows of other tiles (other macOS Spaces, native fullscreen) join only with a frame match (Window > Merge All Windows)
+    var pool = candidates
+        .filter { home.contains($0.id) || owners[$0.id] == nil || isFrameEqual($0) }
+        .sorted { score($0) != score($1) ? score($0) > score($1) : $0.id < $1.id }
     var result: Set<UInt32> = []
     for title in remainingTitles {
         if let index = pool.firstIndex(where: { $0.title == title }) {
@@ -54,6 +63,16 @@ struct TabReconcileResult: Equatable {
     var newGroups: [TabTile]
 }
 
+// Ties go to the oldest tile. CGWindowIDs only grow, so it's the one with the lowest id
+func ownerIndex(_ tiles: [TabTile], of members: Set<UInt32>) -> Int? {
+    tiles.indices
+        .filter { !tiles[$0].tabIds.isDisjoint(with: members) }
+        .min(by: { a, b in
+            let (countA, countB) = (tiles[a].tabIds.intersection(members).count, tiles[b].tabIds.intersection(members).count)
+            return countA != countB ? countA > countB : tiles[a].tabIds.min().orDie() < tiles[b].tabIds.min().orDie()
+        })
+}
+
 // Hidden tabs can't be observed directly, so ids leave a tile only on positive evidence:
 // they are dead, they belong to another tile's group, or they are visible on their own (dragged out)
 func reconcileTabGroups(_ tiles: [TabTile], _ scan: TabGroupScan, aliveIds: Set<UInt32>) -> TabReconcileResult {
@@ -64,9 +83,7 @@ func reconcileTabGroups(_ tiles: [TabTile], _ scan: TabGroupScan, aliveIds: Set<
     for visibleId in scan.groups.keys.sorted() {
         let members = scan.groups[visibleId].orDie()
         let owners = tiles.indices.filter { !tiles[$0].tabIds.isDisjoint(with: members) }
-        let owner = owners.first(where: { tiles[$0].tabIds.contains(visibleId) })
-            ?? owners.max(by: { tiles[$0].tabIds.intersection(members).count < tiles[$1].tabIds.intersection(members).count })
-        guard let owner else {
+        guard let owner = ownerIndex(tiles, of: members) else {
             newGroups.append(TabTile(visibleId: visibleId, tabIds: members))
             continue
         }
