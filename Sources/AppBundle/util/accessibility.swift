@@ -279,6 +279,15 @@ enum Ax {
         key: kAXFocusedWindowAttribute,
         getter: windowOrNil,
     )
+    static let childrenAttr = ReadableAttrImpl<[AXUIElement]>(
+        key: kAXChildrenAttribute,
+        getter: { $0 as? [AXUIElement] },
+    )
+    /// Tabs of an AXTabGroup (native macOS tabs are AXRadioButtons titled after their windows)
+    static let tabsAttr = ReadableAttrImpl<[AXUIElement]>(
+        key: kAXTabsAttribute,
+        getter: { $0 as? [AXUIElement] },
+    )
     //static let mainWindowAttr = ReadableAttrImpl<AXUIElement>(
     //    key: kAXMainWindowAttribute,
     //    getter: tryGetWindow
