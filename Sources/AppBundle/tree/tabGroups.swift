@@ -99,3 +99,20 @@ func reconcileTabGroups(_ tiles: [TabTile], _ scan: TabGroupScan, aliveIds: Set<
     }
     return TabReconcileResult(outcomes: outcomes, newGroups: newGroups)
 }
+
+@MainActor
+func applyTabGroupScan(_ scan: TabGroupScan, aliveIds: Set<UInt32>) -> [TabTile] {
+    let windows = MacWindow.allWindows
+    let result = reconcileTabGroups(windows.map(\.tabTile), scan, aliveIds: aliveIds)
+    // Merged tiles first: they must release their allWindowsMap entries before the owners claim them
+    for (window, outcome) in zip(windows, result.outcomes) where outcome == .merged {
+        window.garbageCollect(skipClosedWindowsCache: true)
+    }
+    for (window, outcome) in zip(windows, result.outcomes) {
+        if case .keep(let tile) = outcome, tile != window.tabTile {
+            window.setTabs(tile)
+        }
+    }
+    // .dead tiles are left for the regular garbage collection in refresh()
+    return result.newGroups
+}

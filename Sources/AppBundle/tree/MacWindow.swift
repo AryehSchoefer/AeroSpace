@@ -35,6 +35,13 @@ final class MacWindow: Window {
     @discardableResult
     static func getOrRegister(windowId: UInt32, macApp: MacApp) async throws -> MacWindow {
         if let existing = allWindowsMap[windowId] { return existing }
+        // A new native macOS tab joins the tile of its tab group instead of splitting the layout
+        let tabSiblingTile = try await macApp.getTabSiblingIds(windowId, .cancellable).lazy.compactMap { allWindowsMap[$0] }.first
+        if let existing = allWindowsMap[windowId] { return existing }
+        if let tabSiblingTile {
+            tabSiblingTile.setTabs(TabTile(visibleId: windowId, tabIds: tabSiblingTile.tabIds.union([windowId])))
+            return tabSiblingTile
+        }
         let rect = try await macApp.getAxRect(windowId, .cancellable)
         let data = try await unbindAndGetBindingDataForNewWindow(
             windowId,
